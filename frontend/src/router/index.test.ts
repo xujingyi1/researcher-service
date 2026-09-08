@@ -17,6 +17,8 @@ describe('页面路由按需加载', () => {
       'categories',
       'chat',
       'containers',
+      // 字典序：'-'（0x2d）先于 's'，故 'figure-editor' 排在 'figures' 前。
+      'figure-editor',
       'figures',
       'legal-document',
       'login',
@@ -69,6 +71,19 @@ describe('decideGuard（守卫决策纯函数）', () => {
   it('普通路由不受 requiresAdmin 影响（默认 false）', () => {
     expect(decideGuard(true, authed)).toBeUndefined()
     expect(decideGuard(true, authedAdmin)).toBeUndefined()
+  })
+})
+
+describe('Figure Editor 路由', () => {
+  it('注册为受保护路由且懒加载 FigureEditorView', () => {
+    const record = routes.find((route) => route.name === 'figure-editor')
+    expect(record).toMatchObject({
+      path: '/figure-editor',
+      name: 'figure-editor',
+      meta: { requiresAuth: true },
+    })
+    expect(record?.component).toBeTypeOf('function')
+    expect(router.resolve('/figure-editor').name).toBe('figure-editor')
   })
 })
 

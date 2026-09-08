@@ -95,6 +95,19 @@ describe('App navigation', () => {
     expect(wrapper.find('[data-test="nav-figures"]').exists()).toBe(false)
   })
 
+  // F1（docs/figure-editor/reconnaissance.md）：Figure Editor 入口为常规受保护页——登录 shell 下
+  // 恒显示，不随 AutoFigure capability / admin role 条件渲染（非 admin-only、非 flag-gated）。
+  it('Figure Editor nav 入口：登录 shell 下显示', () => {
+    auth.isAuthenticated = true
+    const wrapper = mount(App, {
+      global: {
+        mocks: { $route: { name: 'chat' } },
+        stubs: { RouterLink: true, RouterView: true },
+      },
+    })
+    expect(wrapper.find('[data-test="nav-figure-editor"]').exists()).toBe(true)
+  })
+
   // T09：认证态跟随探测——已登录时 App 挂载即触发一次 capability probe（nav 入口据此解析）。
   it('已登录时触发一次 capability probe', () => {
     auth.isAuthenticated = true

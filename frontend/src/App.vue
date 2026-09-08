@@ -47,6 +47,8 @@ async function handleLogout(): Promise<void> {
       <router-link to="/categories">Categories</router-link>
       <router-link to="/models">Model 配置</router-link>
       <router-link v-if="figuresEnabled" to="/figures" data-test="nav-figures">AutoFigure</router-link>
+      <!-- Figure Editor（F1，docs/figure-editor/reconnaissance.md）：常规入口，登录即见（非 admin-only、非 flag-gated）。 -->
+      <router-link to="/figure-editor" data-test="nav-figure-editor">Figure Editor</router-link>
       <router-link v-if="isAdmin" to="/admin/users" data-test="nav-admin-users">账号管理</router-link>
       <router-link v-if="isAdmin" to="/admin/trace-logs" data-test="nav-trace-logs">内容消息</router-link>
       <button

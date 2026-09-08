@@ -51,6 +51,15 @@ export const routes: RouteRecordRaw[] = [
     component: () => import('@/views/AutoFigureView.vue'),
     meta: { requiresAuth: true },
   },
+  // Figure Editor（F1，docs/figure-editor/reconnaissance.md）：面板内图片/图表编辑正式模块。
+  // Path A V1 = Vue shell + 后续 same-origin SVG-Edit iframe；常规受保护路由，不做 capability
+  // 门控——F2/F3 落地前直达占位页（非 404），与 admin 路由同理：入口常显只是 UI。
+  {
+    path: '/figure-editor',
+    name: 'figure-editor',
+    component: () => import('@/views/FigureEditorView.vue'),
+    meta: { requiresAuth: true },
+  },
   // #328：顶层路由（无 /admin 嵌套壳）；meta.requiresAdmin 首例——非 admin 重定向 /
   {
     path: '/admin/users',
