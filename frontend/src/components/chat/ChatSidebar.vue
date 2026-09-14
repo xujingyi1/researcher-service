@@ -1,6 +1,8 @@
 <script setup lang="ts">
 // 左栏：容器 + 会话列表 / workspace 文件树（#316：#340 拆分边界，props-in/emits-out 哑组件）。
-// #626 T1（变体 A）：顶部「会话｜文件」胶囊分段控制左栏内容切换，侧栏宽度（220px）不变。
+// #626 T1（变体 A）：顶部「会话｜文件」胶囊分段控制左栏内容切换（#671 后不变）。
+// #671：宽度不再由本组件固定（原 220px）——由宿主 ChatView 的 PanelTriState 三态包装接管，
+// 默认宽度仍是 220px，避免包装与本组件双重定宽。
 // sessions 分支=容器+会话列表（原有逻辑）；files 分支=WorkspaceTree（数据由父注入，点击冒泡 openFile）。
 import type { InstanceDTO } from '@/api/containers'
 import type { SessionDTO } from '@/chat/gatewayChat'
@@ -115,7 +117,10 @@ const groupedSessions = computed(() => {
 </template>
 
 <style scoped>
-.side { width: 220px; flex: none; border-right: 1px solid var(--el-border-color); padding: 10px 12px; overflow-y: auto; display: flex; flex-direction: column; }
+/* #671：自身定宽与贴边边框已移除——宽度与边框由 PanelTriState 三态包装接管
+   （inline 可拖宽 / collapsed 窄条 / popped 浮层），本组件只填满包装给的盒子。
+   height:100% + overflow-y:auto 与 FileTree 同构：在包装的 panel-body 内自行滚动。 */
+.side { height: 100%; padding: 10px 12px; overflow-y: auto; display: flex; flex-direction: column; }
 .seg { display: flex; background: var(--el-fill-color-light); border-radius: 9px; padding: 3px; margin-bottom: 10px; flex: none; }
 .seg button { flex: 1; border: none; border-radius: 7px; padding: 5px 0; background: transparent; color: var(--el-text-color-secondary); font-size: 13px; cursor: pointer; }
 .seg button.on { background: var(--el-bg-color); color: var(--el-text-color-primary); font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, .12); }

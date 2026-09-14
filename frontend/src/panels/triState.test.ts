@@ -6,14 +6,16 @@ import { describe, expect, it } from 'vitest'
 import {
   INLINE_RANGE_NARROW,
   INLINE_RANGE_WIDE,
+  NARROW_VIEWPORT_MAX,
   POPPED_DEFAULT_VW,
   POPPED_MAX_VW,
   POPPED_MIN_VW,
-  TRI_STATE_MIN_VIEWPORT,
+  POPPED_VW_RANGE,
   clampPoppedVw,
   clampRange,
   draggedWidth,
   pxToVw,
+  transitionGroup,
   transitionPanelState,
   triStateEnabled,
   vwToPx,
@@ -107,12 +109,103 @@ describe('draggedWidth（拖拽几何：side 决定拖向）', () => {
   })
 })
 
-describe('triStateEnabled（窄屏 <720px 整体禁用）', () => {
-  it('≥720 启用，<720 禁用', () => {
-    expect(TRI_STATE_MIN_VIEWPORT).toBe(720)
-    expect(triStateEnabled(720)).toBe(true)
-    expect(triStateEnabled(1024)).toBe(true)
+describe('triStateEnabled（窄屏 ≤720px 整体禁用，与 CSS breakpoint 同一语义）', () => {
+  it('719 / 720 / 721 三点：720px 已进入窄屏布局，三态不得继续启用', () => {
+    expect(NARROW_VIEWPORT_MAX).toBe(720)
     expect(triStateEnabled(719)).toBe(false)
+    expect(triStateEnabled(720)).toBe(false) // max-width:720px 命中 → 窄屏
+    expect(triStateEnabled(721)).toBe(true)
+  })
+
+  it('远离阈值两侧', () => {
+    expect(triStateEnabled(1024)).toBe(true)
     expect(triStateEnabled(375)).toBe(false)
+  })
+})
+
+describe('transitionGroup（组内互斥：同页至多一个 popped）', () => {
+  it('弹 B 自动收回已 popped 的 A（恒至多一个 popped）', () => {
+    const before = [
+      { id: 'wiki/file-tree', state: 'popped' as const },
+      { id: 'wiki/graph', state: 'collapsed' as const },
+    ]
+    expect(transitionGroup(before, 'wiki/graph', 'pop')).toEqual([
+      { id: 'wiki/file-tree', state: 'inline' },
+      { id: 'wiki/graph', state: 'popped' },
+    ])
+  })
+
+  it('反向同样成立（镜像：弹图谱收文件树 / 弹文件树收图谱）', () => {
+    const before = [
+      { id: 'wiki/file-tree', state: 'collapsed' as const },
+      { id: 'wiki/graph', state: 'popped' as const },
+    ]
+    expect(transitionGroup(before, 'wiki/file-tree', 'pop')).toEqual([
+      { id: 'wiki/file-tree', state: 'popped' },
+      { id: 'wiki/graph', state: 'inline' },
+    ])
+  })
+
+  it('非 pop 事件与兄弟无关（collapse/expand/restore 不动他人）', () => {
+    const before = [
+      { id: 'a', state: 'collapsed' as const },
+      { id: 'b', state: 'popped' as const },
+    ]
+    expect(transitionGroup(before, 'a', 'expand')).toEqual([
+      { id: 'a', state: 'inline' },
+      { id: 'b', state: 'popped' },
+    ])
+    expect(transitionGroup(before, 'b', 'restore')).toEqual([
+      { id: 'a', state: 'collapsed' },
+      { id: 'b', state: 'inline' },
+    ])
+  })
+
+  it('非法转移幂等，且不误伤兄弟（inline 上误触 pop 不触发互斥）', () => {
+    const before = [
+      { id: 'a', state: 'inline' as const },
+      { id: 'b', state: 'popped' as const },
+    ]
+    expect(transitionGroup(before, 'a', 'pop')).toEqual(before)
+    expect(transitionGroup(before, 'a', 'restore')).toEqual(before)
+  })
+
+  it('成员单独成组 / 空组：不误收、不抛', () => {
+    expect(transitionGroup([{ id: 'a', state: 'popped' }], 'a', 'pop')).toEqual([
+      { id: 'a', state: 'popped' },
+    ])
+    expect(transitionGroup([], 'a', 'pop')).toEqual([])
+  })
+
+  it('三成员组：互斥后恒至多一个 popped（其余全被收回）', () => {
+    const before = [
+      { id: 'a', state: 'popped' as const },
+      { id: 'b', state: 'popped' as const },
+      { id: 'c', state: 'collapsed' as const },
+    ]
+    const after = transitionGroup(before, 'c', 'pop')
+    expect(after.filter((m) => m.state === 'popped')).toHaveLength(1)
+    expect(after.find((m) => m.id === 'c')?.state).toBe('popped')
+    expect(after.find((m) => m.id === 'a')?.state).toBe('inline')
+    expect(after.find((m) => m.id === 'b')?.state).toBe('inline')
+  })
+
+  it('不修改入参（纯函数）', () => {
+    const before = [
+      { id: 'a', state: 'popped' as const },
+      { id: 'b', state: 'collapsed' as const },
+    ]
+    transitionGroup(before, 'b', 'pop')
+    expect(before).toEqual([
+      { id: 'a', state: 'popped' },
+      { id: 'b', state: 'collapsed' },
+    ])
+  })
+})
+
+describe('POPPED_VW_RANGE（浮层宽度持久化档）', () => {
+  it('与钳制常量同源（存储读出后按同一档钳制）', () => {
+    expect(POPPED_VW_RANGE).toEqual({ min: POPPED_MIN_VW, max: POPPED_MAX_VW })
+    expect(clampRange(120, POPPED_VW_RANGE.min, POPPED_VW_RANGE.max)).toBe(90)
   })
 })

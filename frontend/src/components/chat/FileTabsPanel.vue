@@ -1,7 +1,8 @@
 <script setup lang="ts">
-// FileTabsPanel —— 右面板壳（#626 T1 / #618 规格 §2，变体 A：360px 固定 + 横排 tab 条 + 骨架/全文）。
-// 哑组件：横排 tab 条（basename + ×）+ 全关按钮 + 内嵌 FileViewer 渲染 active tab。宽度由父 ChatView
-// 给（360px）；本组件只占满高度。tab 关闭 × 用 @click.stop 不触发 activate。
+// FileTabsPanel —— 右面板壳（#626 T1 / #618 规格 §2，变体 A：横排 tab 条 + 骨架/全文）。
+// 哑组件：横排 tab 条（basename + ×）+ 全关按钮 + 内嵌 FileViewer 渲染 active tab。
+// #672：宽度与贴边边框改由宿主 ChatView 的 PanelTriState 三态包装接管（原 360px 定宽 + 自身
+// border-left 会产生双重定宽/双边框），本组件只占满包装给的盒子。tab 关闭 × 用 @click.stop 不触发 activate。
 import { computed } from 'vue'
 import type { FileTab } from '@/stores/fileTabs'
 import FileViewer from '@/components/chat/FileViewer.vue'
@@ -58,7 +59,8 @@ const activeTab = computed(() => props.tabs.find((t) => t.path === props.activeP
 </template>
 
 <style scoped>
-.panel { height: 100%; display: flex; flex-direction: column; min-width: 0; background: var(--el-bg-color); border-left: 1px solid var(--el-border-color); }
+/* 贴边左边框由三态包装的 [data-side='right'] 规则给，此处不再自画（避免双边框）。 */
+.panel { height: 100%; display: flex; flex-direction: column; min-width: 0; background: var(--el-bg-color); }
 .strip { display: flex; align-items: center; border-bottom: 1px solid var(--el-border-color); overflow-x: auto; flex: none; }
 .tab { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-right: 1px solid var(--el-border-color); font-size: 12.5px; color: var(--el-text-color-secondary); white-space: nowrap; cursor: pointer; user-select: none; }
 .tab:hover { background: var(--el-fill-color-light); }

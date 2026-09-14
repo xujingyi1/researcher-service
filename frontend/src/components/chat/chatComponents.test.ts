@@ -1157,3 +1157,143 @@ describe('ChatStream 锚点导航接线（issue #669）', () => {
     expect(w.find('[data-test="anchor-rail"]').exists()).toBe(false)
   })
 })
+
+// ---- #667 收口：容器尺寸变化（面板拖宽/折叠/弹出、窗口 resize）后锚点几何重测 ----
+describe('ChatStream 锚点导航 —— 容器尺寸变化重测（#667 收口）', () => {
+  // jsdom 无 ResizeObserver：注入可控替身，手动派发尺寸变化（真浏览器由布局驱动）。
+  class StubResizeObserver {
+    static instances: StubResizeObserver[] = []
+    observed: Element[] = []
+    disconnected = false
+    private readonly callback: ResizeObserverCallback
+
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback
+      StubResizeObserver.instances.push(this)
+    }
+    observe(el: Element): void { this.observed.push(el) }
+    unobserve(): void {}
+    disconnect(): void { this.disconnected = true }
+    fire(): void {
+      this.callback([], this as unknown as ResizeObserver)
+    }
+  }
+
+  let stream: HTMLElement
+  let scrollTopValue = 0
+
+  function stubStreamGeometry(height: number, clientHeight: number) {
+    Object.defineProperty(stream, 'scrollHeight', { configurable: true, value: height })
+    Object.defineProperty(stream, 'clientHeight', { configurable: true, value: clientHeight })
+    Object.defineProperty(stream, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTopValue,
+      set: (v: number) => { scrollTopValue = v },
+    })
+  }
+
+  function stubMsgOffsets(w: Awaited<ReturnType<typeof mount>>, offsets: Record<number, number>) {
+    for (const [index, top] of Object.entries(offsets)) {
+      const node = w.get(`[data-index="${index}"]`).element as HTMLElement
+      Object.defineProperty(node, 'offsetTop', { configurable: true, value: top })
+    }
+  }
+
+  const U = (text: string) => newMsg('user', text)
+  const A = (text: string) => {
+    const m = newMsg('assistant', text)
+    m.streaming = false
+    return m
+  }
+
+  afterEach(() => {
+    delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver
+    StubResizeObserver.instances = []
+    window.innerWidth = 1024
+  })
+
+  it('拖宽/弹出改变容器尺寸 → 锚点比例与 railHeight 重测（不经 messages 变化）', async () => {
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver
+    const msgs = [U('顶'), A('答'), U('中'), A('答'), U('底')]
+    const w = mount(ChatStream, {
+      props: { messages: [], historyHasMore: false, historyLoading: false },
+    })
+    stream = w.get('[data-test="stream"]').element as HTMLElement
+    stubStreamGeometry(1000, 100)
+    await w.setProps({ messages: msgs })
+    await nextTick()
+    stubMsgOffsets(w, { 0: 0, 2: 450, 4: 900 })
+    await w.setProps({ messages: [...msgs] })
+    await nextTick()
+    expect(w.get('[data-test="anchor-dot-2"]').attributes('style')).toContain('top: 50%')
+
+    const ro = StubResizeObserver.instances[0]
+    expect(ro.observed).toHaveLength(1) // 观察的是 .stream 滚动容器
+
+    // 面板拖宽 → 消息换行重排：容器与消息布局位置全变，但 messages 引用不变（无 props 更新）
+    // （比例分母是可滚距离 scrollHeight-clientHeight = 1600，非 scrollHeight）
+    stubStreamGeometry(2000, 400)
+    stubMsgOffsets(w, { 0: 0, 2: 800, 4: 1600 })
+    ro.fire()
+    await nextTick()
+    expect(w.get('[data-test="anchor-dot-0"]').attributes('style')).toContain('top: 0%')
+    expect(w.get('[data-test="anchor-dot-2"]').attributes('style')).toContain('top: 50%') // 800/1600
+    expect(w.get('[data-test="anchor-dot-4"]').attributes('style')).toContain('top: 100%') // 1600/1600
+  })
+
+  it('容器缩到不可滚（弹出浮层压窄等）→ 轨随重测隐藏', async () => {
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver
+    const msgs = [U('一'), A('答')]
+    const w = mount(ChatStream, {
+      props: { messages: msgs, historyHasMore: false, historyLoading: false },
+    })
+    stream = w.get('[data-test="stream"]').element as HTMLElement
+    stubStreamGeometry(1000, 100)
+    await w.setProps({ messages: [...msgs] })
+    await nextTick()
+    expect(w.find('[data-test="anchor-rail"]').exists()).toBe(true)
+
+    stubStreamGeometry(400, 800) // scrollHeight < clientHeight：一屏全见
+    StubResizeObserver.instances[0].fire()
+    await nextTick()
+    expect(w.find('[data-test="anchor-rail"]').exists()).toBe(false)
+  })
+
+  it('卸载时断开观察，不留残留监听', async () => {
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver
+    const w = mount(ChatStream, {
+      props: { messages: [U('一')], historyHasMore: false, historyLoading: false },
+    })
+    const ro = StubResizeObserver.instances[0]
+    expect(ro.disconnected).toBe(false)
+    w.unmount()
+    expect(ro.disconnected).toBe(true)
+  })
+
+  it('环境无 ResizeObserver（jsdom 默认）时不抛，锚点导航照常工作', async () => {
+    const msgs = [U('一'), A('答')]
+    const w = mount(ChatStream, {
+      props: { messages: msgs, historyHasMore: false, historyLoading: false },
+    })
+    stream = w.get('[data-test="stream"]').element as HTMLElement
+    stubStreamGeometry(1000, 100)
+    await w.setProps({ messages: [...msgs] })
+    await nextTick()
+    expect(w.find('[data-test="anchor-rail"]').exists()).toBe(true)
+  })
+
+  it('窄屏 (<720px) 三态禁用但锚点轨照常保留（#667：窄屏不降级导航）', async () => {
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver
+    window.innerWidth = 500
+    const msgs = [U('一'), A('答'), U('二')]
+    const w = mount(ChatStream, {
+      props: { messages: msgs, historyHasMore: false, historyLoading: false },
+    })
+    stream = w.get('[data-test="stream"]').element as HTMLElement
+    stubStreamGeometry(1000, 100)
+    await w.setProps({ messages: [...msgs] })
+    await nextTick()
+    expect(w.find('[data-test="stream"] [data-test="anchor-rail"]').exists()).toBe(true)
+    expect(w.find('[data-test="stream"] [data-test="anchor-dot-0"]').exists()).toBe(true)
+  })
+})

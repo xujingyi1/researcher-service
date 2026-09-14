@@ -2,7 +2,7 @@
 // 覆盖：由 graph 数据组装 vis-network 节点/边、当前页节点高亮、点节点冒泡 open 进编辑器。
 // vis-network 需 canvas（jsdom 无），用 vi.mock 替身，专注组件的数据组装与点击转发（seam）。
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 interface MockItem {
   id: string
@@ -25,6 +25,7 @@ const netState = {
   clickHandler: null as ((p: { nodes: string[] }) => void) | null,
   constructorCount: 0,
   destroyCount: 0,
+  fitCount: 0,
 }
 vi.mock('vis-network', () => ({
   Network: class {
@@ -36,6 +37,7 @@ vi.mock('vis-network', () => ({
     on(event: string, cb: (p: { nodes: string[] }) => void): void {
       if (event === 'click') netState.clickHandler = cb
     }
+    fit(): void { netState.fitCount += 1 }
     destroy(): void { netState.destroyCount += 1 }
   },
 }))
@@ -83,6 +85,7 @@ describe('WikiGraph', () => {
     netState.clickHandler = null
     netState.constructorCount = 0
     netState.destroyCount = 0
+    netState.fitCount = 0
   })
 
   it('builds vis-network nodes/edges from graph data', async () => {
@@ -156,5 +159,74 @@ describe('WikiGraph', () => {
     await flushPromises()
     netState.clickHandler?.({ nodes: ['concepts/b.md'] })
     expect(wrapper.emitted('open')).toEqual([['concepts/b.md']])
+  })
+})
+
+describe('WikiGraph — #670 尺寸适配（面板拖宽/弹出浮层后重新 fit）', () => {
+  // jsdom 无 ResizeObserver：注入可控替身并手动派发尺寸变化（真浏览器里由布局驱动）。
+  class StubResizeObserver {
+    static instances: StubResizeObserver[] = []
+    observed: Element[] = []
+    disconnected = false
+    private readonly callback: ResizeObserverCallback
+
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback
+      StubResizeObserver.instances.push(this)
+    }
+    observe(el: Element): void { this.observed.push(el) }
+    unobserve(): void {}
+    disconnect(): void { this.disconnected = true }
+    emit(width: number, height: number): void {
+      this.callback(
+        [{ contentRect: { width, height } } as unknown as ResizeObserverEntry],
+        this as unknown as ResizeObserver,
+      )
+    }
+  }
+
+  beforeEach(() => {
+    netState.constructorCount = 0
+    netState.destroyCount = 0
+    netState.fitCount = 0
+    StubResizeObserver.instances = []
+    globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver
+  })
+
+  afterEach(() => {
+    delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver
+  })
+
+  it('尺寸真变化才 fit：同尺寸重复回调不重 fit（不白丢用户当前视角）', async () => {
+    mount(WikiGraph, { props: { graph: GRAPH, activePath: '' } })
+    await flushPromises()
+    const ro = StubResizeObserver.instances[0]
+    expect(ro.observed).toHaveLength(1) // 观察的是图谱 host 盒子
+
+    ro.emit(320, 600) // 初始固定宽 320
+    expect(netState.fitCount).toBe(1)
+    ro.emit(320, 600) // 尺寸未变（如仅内容重排）
+    expect(netState.fitCount).toBe(1)
+    ro.emit(640, 600) // 拖宽 / 弹出浮层后变宽
+    expect(netState.fitCount).toBe(2)
+    ro.emit(320, 900) // 仅高度变化（如窗口变高）同样要适配
+    expect(netState.fitCount).toBe(3)
+  })
+
+  it('卸载时断开观察，不留残留监听', async () => {
+    const wrapper = mount(WikiGraph, { props: { graph: GRAPH, activePath: '' } })
+    await flushPromises()
+    const ro = StubResizeObserver.instances[0]
+    expect(ro.disconnected).toBe(false)
+    wrapper.unmount()
+    expect(ro.disconnected).toBe(true)
+  })
+
+  it('环境无 ResizeObserver（jsdom 默认）时不抛、不 fit，图谱照常渲染', async () => {
+    delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver
+    mount(WikiGraph, { props: { graph: GRAPH, activePath: '' } })
+    await flushPromises()
+    expect(netState.constructorCount).toBe(1)
+    expect(netState.fitCount).toBe(0)
   })
 })

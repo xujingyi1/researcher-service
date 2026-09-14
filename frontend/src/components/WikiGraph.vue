@@ -2,6 +2,8 @@
 // WikiGraph —— obsidian 风格 wiki 关系图谱（spec §9.6 / issue #45 graph）。
 // 节点=wiki 页（含 ghost 虚节点），边=[[wikilink]]；当前页节点高亮，点节点冒泡 open 进编辑器。
 // vis-network 渲染（canvas）；数据组装与点击转发是组件 seam。
+// #670：容器尺寸随面板三态变化（拖宽 / 弹出浮层 / 收回）——画布盒子变了但视图变换不跟随，
+// 节点会跑出可视区。用 ResizeObserver 盯 host 盒子，尺寸真变化时 fit（fit 内含 redraw）。
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Network } from 'vis-network'
 import { DataSet } from 'vis-data'
@@ -112,11 +114,40 @@ function updateActivePath(activePath: string, previousPath: string): void {
   if (updates.length) nodeData.update(updates)
 }
 
-onMounted(rebuild)
+// 尺寸适配（#670）：只在盒子尺寸真变化时 fit——避免与重建/数据同步互相触发（fit 不改盒子，
+// 但同尺寸重复 fit 会白丢用户当前的缩放/平移视角）。
+let resizeObserver: ResizeObserver | null = null
+let lastBoxWidth = 0
+let lastBoxHeight = 0
+
+function fitToBox(width: number, height: number): void {
+  if (!network) return
+  if (width === lastBoxWidth && height === lastBoxHeight) return
+  lastBoxWidth = width
+  lastBoxHeight = height
+  network.fit()
+}
+
+function observeResize(): void {
+  // jsdom 无 ResizeObserver（真浏览器恒有）：缺席时跳过观察，其余行为不变。
+  if (typeof ResizeObserver === 'undefined' || !host.value) return
+  resizeObserver = new ResizeObserver((entries) => {
+    const box = entries[0]?.contentRect
+    if (box) fitToBox(box.width, box.height)
+  })
+  resizeObserver.observe(host.value)
+}
+
+onMounted(() => {
+  rebuild()
+  observeResize()
+})
 watch(() => props.graph, syncGraph, { deep: true })
 watch(() => props.activePath, updateActivePath)
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
   network?.destroy()
   network = null
   nodeData = null

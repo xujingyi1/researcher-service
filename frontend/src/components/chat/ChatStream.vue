@@ -9,6 +9,8 @@
 // 消息锚点导航（issue #669 / #667 spec）：滚动几何纯函数（chat/anchorNav.ts）+ 本宿主 DOM 度量
 // 注入——筛选 user 锚点/摘要、读消息元素 offsetTop 算刻度比例、scroll 事件更新 scrollspy 指示器、
 // 点击跳转（程序性滚动，经 scroll 事件自然落范式 B 语义）+ 目标消息高亮渐隐。
+// #667 收口：几何在「容器尺寸变化」（面板拖宽/折叠/弹出、窗口 resize）时同样要重测——见下方
+// ResizeObserver（仅 onUpdated/onMounted 会漏掉不改 messages 的纯尺寸变化）。
 import { computed, onBeforeUnmount, onMounted, onUpdated, ref, watch } from 'vue'
 import type { Msg } from '@/stores/chat'
 import { shouldFollowBottom } from '@/chat/scroll'
@@ -131,7 +133,24 @@ function measureAnchors(): void {
   if (next.length === ratios.value.length && next.every((v, i) => v === ratios.value[i])) return
   ratios.value = next
 }
-onMounted(measureAnchors)
+// #667 收口：面板三态（拖宽/折叠/弹出）改的是 .stream 的盒子——宽度变则消息换行重排、
+// offsetTop 全变，高度变则 railHeight 与「可滚」判定变；而这两件事都不经 messages 快照，
+// onUpdated/layoutWatch 都不触发（流式 delta 原地 mutation 同理）。故用 ResizeObserver 盯
+// .stream 盒子，尺寸变化即重测。轨自身 sticky + height:0 不占流，重测不会反向改变盒子尺寸
+// （无 ResizeObserver 回环）。
+let resizeObserver: ResizeObserver | null = null
+
+function observeResize(): void {
+  // jsdom 无 ResizeObserver（真浏览器恒有）：缺席时跳过观察，滚动/滚动spy 语义不变。
+  if (typeof ResizeObserver === 'undefined' || !streamEl.value) return
+  resizeObserver = new ResizeObserver(() => measureAnchors())
+  resizeObserver.observe(streamEl.value)
+}
+
+onMounted(() => {
+  measureAnchors()
+  observeResize()
+})
 // 底部时布局更新后校正滚底（非时间线更新如断线态不制造“有新消息”）；同时重测锚点几何。
 onUpdated(() => {
   if (stickyBottom.value) scrollToBottom()
@@ -176,6 +195,8 @@ watch(
 )
 onBeforeUnmount(() => {
   if (rafId) cancelAnimationFrame(rafId)
+  resizeObserver?.disconnect()
+  resizeObserver = null
 })
 
 defineSlots<{

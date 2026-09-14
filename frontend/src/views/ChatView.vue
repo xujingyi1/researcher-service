@@ -17,6 +17,10 @@ import { useFileTabsStore } from '@/stores/fileTabs'
 import { useAuthStore, tokenOwner } from '@/stores/auth'
 import { safeLocalStorage } from '@/storage'
 import { useChatConnection } from '@/chat/useChatConnection'
+import { INLINE_RANGE_NARROW, INLINE_RANGE_WIDE } from '@/panels/triState'
+import { usePanelGroup } from '@/panels/usePanelGroup'
+import { usePanelTriState } from '@/panels/usePanelTriState'
+import PanelTriState from '@/components/PanelTriState.vue'
 import {
   buildAttachments,
   compressImageFile,
@@ -37,6 +41,63 @@ const auth = useAuthStore()
 // 视图专属态（connecting/errorMsg 上抛至此，disconnected 在 composable 内）
 const connecting = ref(false)
 const errorMsg = ref('')
+
+// #671 / #672：本页三态面板组（每页一个实例，非模块级单例）——左栏与右侧文件预览共用一组，
+// 弹一个自动收回另一个（spec #667 US25）。互斥逻辑单一实现在 usePanelGroup。
+const panelGroup = usePanelGroup()
+// 左栏三态（inline 拖宽 160–560px / collapsed 窄条 / popped 浮层）：默认宽沿用原 220px 固定宽。
+// 「会话｜文件」分段切换仍归本组件（sidebarTab），与呈现态正交。
+const SIDEBAR_DEFAULT_WIDTH = 220
+const sidebarPanel = usePanelTriState({
+  view: 'chat',
+  panel: 'sidebar',
+  side: 'left',
+  inlineRange: INLINE_RANGE_NARROW,
+  defaultInlineWidth: SIDEBAR_DEFAULT_WIDTH,
+  token: () => auth.token,
+  group: panelGroup,
+})
+const {
+  state: sidebarState,
+  inlineWidth: sidebarWidth,
+  poppedVw: sidebarPoppedVw,
+  disabled: sidebarDisabled,
+  viewportWidth: sidebarViewportWidth,
+  onCollapse: onSidebarCollapse,
+  onPop: onSidebarPop,
+  onExpand: onSidebarExpand,
+  onRestore: onSidebarRestore,
+  onResizeInline: onSidebarResizeInline,
+  onResizePopped: onSidebarResizePopped,
+  onDragEnd: onSidebarDragEnd,
+} = sidebarPanel
+
+// #672：右侧文件预览三态（inline 拖宽 240–720px / collapsed 窄条 / popped 浮层），贴右边。
+// 默认宽沿用原 360px 固定宽；与左栏同组 → 同页至多一个浮层（与 wiki 页机制同源）。
+const FILE_PANEL_DEFAULT_WIDTH = 360
+const filePreviewPanel = usePanelTriState({
+  view: 'chat',
+  panel: 'file-preview',
+  side: 'right',
+  inlineRange: INLINE_RANGE_WIDE,
+  defaultInlineWidth: FILE_PANEL_DEFAULT_WIDTH,
+  token: () => auth.token,
+  group: panelGroup,
+})
+const {
+  state: filePanelState,
+  inlineWidth: filePanelWidth,
+  poppedVw: filePanelPoppedVw,
+  disabled: filePanelDisabled,
+  viewportWidth: filePanelViewportWidth,
+  onCollapse: onFilePanelCollapse,
+  onPop: onFilePanelPop,
+  onExpand: onFilePanelExpand,
+  onRestore: onFilePanelRestore,
+  onResizeInline: onFilePanelResizeInline,
+  onResizePopped: onFilePanelResizePopped,
+  onDragEnd: onFilePanelDragEnd,
+} = filePreviewPanel
 
 // #626 T1：左栏「会话｜文件」分段态（视图专属，默认「会话」）+ workspace 文件 tab store（决议 A：与 chatStore 同级）
 const sidebarTab = ref<'sessions' | 'files'>('sessions')
@@ -241,22 +302,41 @@ defineExpose({
 
 <template>
   <div class="chat">
-    <ChatSidebar
-      :instances="chat.instances"
-      :sessions="chat.sessions"
-      :selected-container="chat.selectedContainer"
-      :selected-session="chat.selectedSession"
-      :sidebar-tab="sidebarTab"
-      :tree="fileTabs.tree"
-      :tree-error="fileTabs.treeError"
-      :active-file-path="fileTabs.activePath ?? ''"
-      @select-container="conn.selectContainer"
-      @select-session="conn.pickSession"
-      @remove-session="removeSession"
-      @new-session="conn.newSession"
-      @switch-tab="switchSidebarTab"
-      @open-file="(path: string) => void fileTabs.openFromTree(path)"
-    />
+    <!-- #671：左栏接入三态包装（拖宽/窄条/浮层）；窄屏整体禁用，退回本页原响应式布局。 -->
+    <PanelTriState
+      :state="sidebarState"
+      side="left"
+      label="侧栏"
+      :disabled="sidebarDisabled"
+      :inline-width="sidebarWidth"
+      :default-width="SIDEBAR_DEFAULT_WIDTH"
+      :popped-vw="sidebarPoppedVw"
+      :viewport-width="sidebarViewportWidth"
+      @collapse="onSidebarCollapse"
+      @pop="onSidebarPop"
+      @expand="onSidebarExpand"
+      @restore="onSidebarRestore"
+      @resize-inline="onSidebarResizeInline"
+      @resize-popped="onSidebarResizePopped"
+      @drag-end="onSidebarDragEnd"
+    >
+      <ChatSidebar
+        :instances="chat.instances"
+        :sessions="chat.sessions"
+        :selected-container="chat.selectedContainer"
+        :selected-session="chat.selectedSession"
+        :sidebar-tab="sidebarTab"
+        :tree="fileTabs.tree"
+        :tree-error="fileTabs.treeError"
+        :active-file-path="fileTabs.activePath ?? ''"
+        @select-container="conn.selectContainer"
+        @select-session="conn.pickSession"
+        @remove-session="removeSession"
+        @new-session="conn.newSession"
+        @switch-tab="switchSidebarTab"
+        @open-file="(path: string) => void fileTabs.openFromTree(path)"
+      />
+    </PanelTriState>
     <main class="main">
       <ChatHeader
         :title="currentSessionTitle"
@@ -331,23 +411,42 @@ defineExpose({
         </template>
       </ChatComposer>
     </main>
-    <FileTabsPanel
+    <!-- #672：无 tab 时连三态包装一起不渲染（不残留幽灵手柄/浮层入口）；有 tab 时恒以
+         inline 起步（呈现态不持久化），拖宽/折叠/弹出由三态包装接管。 -->
+    <PanelTriState
       v-if="fileTabs.tabs.length"
-      class="file-panel"
-      :tabs="fileTabs.tabs"
-      :active-path="fileTabs.activePath"
-      @activate="activateTab"
-      @close="fileTabs.closeTab"
-      @close-all="fileTabs.closeAll"
-      @retry="fileTabs.retry"
-    />
+      :state="filePanelState"
+      side="right"
+      label="文件预览"
+      :disabled="filePanelDisabled"
+      :inline-width="filePanelWidth"
+      :default-width="FILE_PANEL_DEFAULT_WIDTH"
+      :popped-vw="filePanelPoppedVw"
+      :viewport-width="filePanelViewportWidth"
+      @collapse="onFilePanelCollapse"
+      @pop="onFilePanelPop"
+      @expand="onFilePanelExpand"
+      @restore="onFilePanelRestore"
+      @resize-inline="onFilePanelResizeInline"
+      @resize-popped="onFilePanelResizePopped"
+      @drag-end="onFilePanelDragEnd"
+    >
+      <FileTabsPanel
+        :tabs="fileTabs.tabs"
+        :active-path="fileTabs.activePath"
+        @activate="activateTab"
+        @close="fileTabs.closeTab"
+        @close-all="fileTabs.closeAll"
+        @retry="fileTabs.retry"
+      />
+    </PanelTriState>
   </div>
 </template>
 
 <style scoped>
 .chat { display: flex; height: 100%; min-height: 0; }
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.file-panel { width: 360px; flex: none; }
+/* 原 .file-panel 固定宽（360px）已移除：宽度由 PanelTriState 三态接管，避免双重定宽。 */
 .connection-banner { display: flex; align-items: center; gap: 10px; padding: 8px 18px; font-size: 13px; }
 .connection-banner.info { color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
 .connection-banner.danger { color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
@@ -364,7 +463,10 @@ defineExpose({
 .slash-item .desc { margin-left: auto; color: var(--el-text-color-secondary); font-size: 12px; }
 @media (max-width: 720px) {
   .chat { flex: 1; min-height: 0; flex-direction: column; }
-  .chat :deep(.side) { width: auto; max-height: 34vh; border-right: 0; border-bottom: 1px solid var(--el-border-color); }
+  /* #671 / #672：窄屏三态整体禁用，两侧面板退回「整列常驻块」——覆盖包装的默认宽度与贴边竖边框
+     （原 .side 上的同款规则上移到包装），横向堆叠改纵向分区。 */
+  .chat :deep(.panel.plain) { width: auto; border-right: 0; border-bottom: 1px solid var(--el-border-color); }
+  .chat :deep(.side) { max-height: 34vh; }
   .chat :deep(.stream) { padding: 12px; }
   .chat :deep(.composer) { padding: 10px 12px; }
   .chat :deep(.msg), .chat :deep(.approval) { min-width: 0; max-width: 100%; box-sizing: border-box; }

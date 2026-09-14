@@ -265,6 +265,131 @@ describe('WikiView — #668 面板三态接线（wiki 文件树）', () => {
   })
 })
 
+describe('WikiView — #670 面板三态接线（wiki 图谱 + 同页互斥）', () => {
+  afterEach(() => {
+    window.innerWidth = 1024
+    globalThis.localStorage.clear()
+  })
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    ;(listInstances as ReturnType<typeof vi.fn>).mockResolvedValue(INSTANCES)
+    ;(getTree as ReturnType<typeof vi.fn>).mockResolvedValue(TREE)
+    ;(getGraph as ReturnType<typeof vi.fn>).mockResolvedValue(GRAPH)
+    ;(readPage as ReturnType<typeof vi.fn>).mockResolvedValue({
+      path: 'concepts/a.md', title: 'A', content: '# A',
+    })
+    globalThis.localStorage.clear()
+  })
+
+  // 面板根节点按贴边侧区分：左文件树 / 右图谱（互斥用例要分别点名两个面板）
+  function panels(wrapper: ReturnType<typeof mountView>) {
+    return {
+      tree: wrapper.find('[data-test="panel"][data-side="left"]'),
+      graph: wrapper.find('[data-test="panel"][data-side="right"]'),
+    }
+  }
+
+  it('图谱被三态包装接管（inline 态 + 贴右缘 + WikiGraph 在 slot 内）', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const { graph } = panels(wrapper)
+    expect(graph.exists()).toBe(true)
+    expect(graph.attributes('data-state')).toBe('inline') // 态不持久化：每次进页 inline
+    expect(graph.attributes('style')).toContain('width: 320px') // 沿用原固定宽
+    expect(graph.element.contains(wrapper.find('[data-test="wiki-graph"]').element)).toBe(true)
+  })
+
+  it('图谱宽度经 localStorage 恢复（key 按 wiki/graph 独立于文件树）', async () => {
+    globalThis.localStorage.setItem('researcher:panel:signed-out:wiki:graph:width', '600')
+    const wrapper = mountView()
+    await flushPromises()
+    expect(panels(wrapper).graph.attributes('style')).toContain('width: 600px')
+    // 文件树仍是自己的默认宽——两个面板不共用 key
+    expect(panels(wrapper).tree.attributes('style')).toContain('width: 220px')
+  })
+
+  it('graphOpen=false 时连三态包装一起不渲染（无幽灵手柄/浮层）', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.find('[data-test="toggle-graph"]').trigger('click')
+    expect(wrapper.find('[data-test="wiki-graph"]').exists()).toBe(false)
+    expect(panels(wrapper).graph.exists()).toBe(false)
+    // 右侧面板消失后，页面上只剩文件树一个三态面板（其手柄仍可用）
+    expect(wrapper.findAll('[data-test="panel"]')).toHaveLength(1)
+    expect(wrapper.find('[data-test="drag-handle"]').exists()).toBe(true)
+
+    await wrapper.find('[data-test="toggle-graph"]').trigger('click')
+    expect(panels(wrapper).graph.attributes('data-state')).toBe('inline')
+  })
+
+  it('图谱折叠 → 弹出：浮层态，文件树不受影响', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const { graph, tree } = panels(wrapper)
+    await graph.find('[data-test="collapse-btn"]').trigger('click')
+    expect(panels(wrapper).graph.attributes('data-state')).toBe('collapsed')
+    expect(tree.attributes('data-state')).toBe('inline')
+    await panels(wrapper).graph.find('[data-test="rail"]').trigger('click')
+    expect(panels(wrapper).graph.attributes('data-state')).toBe('popped')
+    expect(tree.attributes('data-state')).toBe('inline')
+  })
+
+  it('US25 同页互斥：图谱弹出时自动收回已弹出的文件树', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    // 文件树：折叠 → 弹出
+    await panels(wrapper).tree.find('[data-test="collapse-btn"]').trigger('click')
+    await panels(wrapper).tree.find('[data-test="rail"]').trigger('click')
+    expect(panels(wrapper).tree.attributes('data-state')).toBe('popped')
+    // 图谱：折叠 → 弹出 → 文件树被自动收回（同页至多一个浮层）
+    await panels(wrapper).graph.find('[data-test="collapse-btn"]').trigger('click')
+    await panels(wrapper).graph.find('[data-test="rail"]').trigger('click')
+    expect(panels(wrapper).graph.attributes('data-state')).toBe('popped')
+    expect(panels(wrapper).tree.attributes('data-state')).toBe('inline')
+  })
+
+  it('US25 互斥反向同样成立（弹文件树收图谱）', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await panels(wrapper).graph.find('[data-test="collapse-btn"]').trigger('click')
+    await panels(wrapper).graph.find('[data-test="rail"]').trigger('click')
+    expect(panels(wrapper).graph.attributes('data-state')).toBe('popped')
+    await panels(wrapper).tree.find('[data-test="collapse-btn"]').trigger('click')
+    await panels(wrapper).tree.find('[data-test="rail"]').trigger('click')
+    expect(panels(wrapper).tree.attributes('data-state')).toBe('popped')
+    expect(panels(wrapper).graph.attributes('data-state')).toBe('inline')
+  })
+
+  it('US26 图谱浮层宽度拖拽结束落独立 key（inline 宽度不被污染）', async () => {
+    window.innerWidth = 1000
+    const wrapper = mountView()
+    await flushPromises()
+    await panels(wrapper).graph.find('[data-test="collapse-btn"]').trigger('click')
+    await panels(wrapper).graph.find('[data-test="rail"]').trigger('click')
+    const handle = panels(wrapper).graph.find('[data-test="pop-handle"]')
+    // 贴右缘浮层：手柄在左缘，左拖变宽（起始 500px = 50vw → 拖到 700px = 70vw）
+    handle.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 500 }))
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 300 }))
+    window.dispatchEvent(new MouseEvent('pointerup', {}))
+    expect(globalThis.localStorage.getItem('researcher:panel:signed-out:wiki:graph:popped-width')).toBe('70')
+    expect(globalThis.localStorage.getItem('researcher:panel:signed-out:wiki:graph:width')).toBeNull()
+  })
+
+  it('窄屏 (<720px) 图谱三态禁用：无控件，图谱照常渲染（保持现有响应式布局）', async () => {
+    window.innerWidth = 500
+    const wrapper = mountView()
+    await flushPromises()
+    const { graph } = panels(wrapper)
+    expect(graph.attributes('data-state')).toBe('disabled')
+    // 禁用态宽度走 CSS 变量（非内联 width）——宿主窄屏媒体查询可覆盖它
+    expect(graph.attributes('style')).toContain('--panel-default-width: 320px')
+    expect(graph.find('[data-test="collapse-btn"]').exists()).toBe(false)
+    expect(graph.find('[data-test="drag-handle"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="wiki-graph"]').exists()).toBe(true)
+  })
+})
+
 describe('WikiView — codex PR #62 意见6 回归', () => {
   beforeEach(() => {
     setActivePinia(createPinia())

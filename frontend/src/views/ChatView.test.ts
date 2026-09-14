@@ -90,6 +90,7 @@ import { createGatewayChat } from '@/chat/gatewayChat'
 import { compressImageFile, fileToRawAttachment, MAX_ATTACHMENT_BYTES } from '@/chat/attachments'
 import { createOutboxStore, OUTBOX_STORAGE_KEY_PREFIX } from '@/chat/outboxStore'
 import { useChatStore } from '@/stores/chat'
+import { useFileTabsStore } from '@/stores/fileTabs'
 import { useAuthStore } from '@/stores/auth'
 import { ApiError } from '@/api/client'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -2334,5 +2335,219 @@ describe('ChatView', () => {
     await w.find('[data-test="new-session"]').trigger('click')
     await flushPromises()
     expect(w.find('[data-test="stream"] [data-test="anchor-rail"]').exists()).toBe(false)
+  })
+
+  // ---- 面板三态（issue #671 左栏 / #672 右侧文件预览）----
+  describe('#671 面板三态接线（chat 左栏）', () => {
+    // 视口宽是全局状态：每个用例后复位，防窄屏用例失败时向后续用例泄漏
+    beforeEach(() => {
+      window.innerWidth = 1024
+      globalThis.localStorage.clear()
+    })
+    afterEach(() => {
+      window.innerWidth = 1024
+      globalThis.localStorage.clear()
+    })
+
+    // owner 段 = tokenOwner(auth.token)：畸形 token 回落到 token 本身（WikiView 未登录态则是
+    // 'signed-out'），故此处用测试注入的 'jwt-test'——key 隔离语义由 panelWidth.test.ts 直测。
+    const SIDEBAR_KEY = 'researcher:panel:jwt-test:chat:sidebar:width'
+    const SIDEBAR_POPPED_KEY = 'researcher:panel:jwt-test:chat:sidebar:popped-width'
+
+    it('左栏被三态包装接管（panel 根 + 恒 inline + 贴左缘 + 默认 220px）', async () => {
+      const { w } = await mountReady()
+      const panel = w.find('[data-test="panel"][data-side="left"]')
+      expect(panel.exists()).toBe(true)
+      expect(panel.attributes('data-state')).toBe('inline') // 态不持久化：每次进页恒 inline
+      expect(panel.attributes('style')).toContain('width: 220px') // 沿用原固定宽
+      expect(panel.element.contains(w.find('[data-test="side-seg"]').element)).toBe(true)
+      expect(w.find('[data-test="drag-handle"]').exists()).toBe(true)
+      expect(w.find('[data-test="collapse-btn"]').exists()).toBe(true)
+    })
+
+    it('左栏宽度经 localStorage 恢复（key 按 chat/sidebar 隔离）', async () => {
+      globalThis.localStorage.setItem(SIDEBAR_KEY, '400')
+      const { w } = await mountReady()
+      expect(w.find('[data-test="panel"][data-side="left"]').attributes('style')).toContain('width: 400px')
+    })
+
+    it('折叠 → 弹出 → 收回 全链路；收回后「会话｜文件」分段态原样恢复', async () => {
+      const { w } = await mountReady()
+      const panel = () => w.find('[data-test="panel"][data-side="left"]')
+      expect(w.find('[data-test="side-seg"]').exists()).toBe(true)
+      await panel().find('[data-test="collapse-btn"]').trigger('click')
+      expect(panel().attributes('data-state')).toBe('collapsed')
+      // 折叠态只剩窄条（slot 内容不渲染，与 inline/popped 互斥的形态）
+      expect(w.find('[data-test="side-seg"]').exists()).toBe(false)
+      await panel().find('[data-test="rail"]').trigger('click')
+      expect(panel().attributes('data-state')).toBe('popped')
+      expect(w.find('[data-test="side-seg"]').exists()).toBe(true)
+      await panel().find('[data-test="restore-btn"]').trigger('click')
+      expect(panel().attributes('data-state')).toBe('inline')
+      // 分段态归本组件（sidebarTab），与呈现态正交——收回后仍是会话分段
+      expect(w.find('[data-test="side-tab-sessions"]').attributes('aria-selected')).toBe('true')
+    })
+
+    it('切到「文件」分段仍按原逻辑拉树（三态包装不改分段行为）', async () => {
+      const { w } = await mountReady()
+      await w.find('[data-test="side-tab-files"]').trigger('click')
+      await flushPromises()
+      expect(w.find('[data-test="side-tab-files"]').attributes('aria-selected')).toBe('true')
+    })
+
+    it('US26 左栏浮层宽度拖拽结束落独立 key（inline 宽度不被污染）', async () => {
+      window.innerWidth = 1000
+      const { w } = await mountReady()
+      const panel = () => w.find('[data-test="panel"][data-side="left"]')
+      await panel().find('[data-test="collapse-btn"]').trigger('click')
+      await panel().find('[data-test="rail"]').trigger('click')
+      // 贴左缘浮层：手柄在右缘，右拖变宽（起始 500px = 50vw → 拖到 700px = 70vw）
+      const handle = panel().find('[data-test="pop-handle"]')
+      handle.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 500 }))
+      window.dispatchEvent(new MouseEvent('pointermove', { clientX: 700 }))
+      window.dispatchEvent(new MouseEvent('pointerup', {}))
+      expect(globalThis.localStorage.getItem(SIDEBAR_POPPED_KEY)).toBe('70')
+      expect(globalThis.localStorage.getItem(SIDEBAR_KEY)).toBeNull()
+    })
+
+    it('窄屏 (<720px) 三态整体禁用：无手柄无按钮，左栏与分段控件照常渲染', async () => {
+      window.innerWidth = 500
+      const { w } = await mountReady()
+      const panel = w.find('[data-test="panel"][data-side="left"]')
+      expect(panel.attributes('data-state')).toBe('disabled')
+      expect(panel.find('[data-test="drag-handle"]').exists()).toBe(false)
+      expect(panel.find('[data-test="collapse-btn"]').exists()).toBe(false)
+      expect(panel.element.contains(w.find('[data-test="side-seg"]').element)).toBe(true)
+      expect(w.find('[data-test="container-demo"]').exists()).toBe(true)
+    })
+  })
+
+  describe('#672 面板三态接线（chat 右侧文件预览 + 同页互斥）', () => {
+    beforeEach(() => {
+      window.innerWidth = 1024
+      globalThis.localStorage.clear()
+    })
+    afterEach(() => {
+      window.innerWidth = 1024
+      globalThis.localStorage.clear()
+    })
+
+    const FILE_KEY = 'researcher:panel:jwt-test:chat:file-preview:width'
+    const FILE_POPPED_KEY = 'researcher:panel:jwt-test:chat:file-preview:popped-width'
+
+    // 开一个只读文件 tab 并激活（等价于树点击/agent 工具事件开路——tab 数据面归 store）
+    async function openTab(): Promise<void> {
+      useFileTabsStore().$patch({
+        tabs: [{
+          path: 'docs/a.md', state: 'loaded', content: '# A',
+          lineMarks: [], binary: false, oversized: false,
+        }],
+        activePath: 'docs/a.md',
+      })
+      await nextTick()
+    }
+
+    const left = (w: ReturnType<typeof mount>) => w.find('[data-test="panel"][data-side="left"]')
+    const right = (w: ReturnType<typeof mount>) => w.find('[data-test="panel"][data-side="right"]')
+
+    it('无 tab 时连三态包装一起不渲染（无幽灵手柄/浮层入口）', async () => {
+      const { w } = await mountReady()
+      expect(w.find('[data-test="file-tabs-panel"]').exists()).toBe(false)
+      expect(right(w).exists()).toBe(false)
+      // 页面上只有左栏一个三态面板：右缘不残留任何三态控件
+      expect(w.findAll('[data-test="panel"]')).toHaveLength(1)
+      expect(w.findAll('[data-test="collapse-btn"]')).toHaveLength(1)
+      expect(w.findAll('[data-test="rail"]')).toHaveLength(0)
+    })
+
+    it('有 tab → 三态包装接管（恒 inline 起步 + 贴右缘 + 默认 360px）', async () => {
+      const { w } = await mountReady()
+      await openTab()
+      expect(right(w).exists()).toBe(true)
+      expect(right(w).attributes('data-state')).toBe('inline') // 态不持久化：每次进页恒 inline
+      expect(right(w).attributes('style')).toContain('width: 360px') // 沿用原固定宽
+      expect(right(w).element.contains(w.find('[data-test="file-tabs-panel"]').element)).toBe(true)
+      expect(right(w).find('[data-test="drag-handle"]').exists()).toBe(true)
+    })
+
+    it('宽度经 localStorage 恢复（key 按 chat/file-preview 独立于左栏）', async () => {
+      globalThis.localStorage.setItem(FILE_KEY, '600')
+      const { w } = await mountReady()
+      await openTab()
+      expect(right(w).attributes('style')).toContain('width: 600px')
+      expect(left(w).attributes('style')).toContain('width: 220px') // 左栏不共用 key
+    })
+
+    it('关掉全部 tab → 三态包装随之消失（不留空壳浮层）', async () => {
+      const { w } = await mountReady()
+      await openTab()
+      expect(right(w).exists()).toBe(true)
+      await w.find('[data-test="tabs-closeall"]').trigger('click')
+      await nextTick()
+      expect(right(w).exists()).toBe(false)
+      expect(w.find('[data-test="file-tabs-panel"]').exists()).toBe(false)
+      expect(w.findAll('[data-test="panel"]')).toHaveLength(1)
+    })
+
+    it('折叠 → 弹出 → 收回 全链路（右侧镜像箭头）', async () => {
+      const { w } = await mountReady()
+      await openTab()
+      await right(w).find('[data-test="collapse-btn"]').trigger('click')
+      expect(right(w).attributes('data-state')).toBe('collapsed')
+      await right(w).find('[data-test="rail"]').trigger('click')
+      expect(right(w).attributes('data-state')).toBe('popped')
+      await right(w).find('[data-test="restore-btn"]').trigger('click')
+      expect(right(w).attributes('data-state')).toBe('inline')
+    })
+
+    it('US25 同页互斥：弹右预览自动收回已弹出的左栏（与 wiki 页机制同源）', async () => {
+      const { w } = await mountReady()
+      await openTab()
+      await left(w).find('[data-test="collapse-btn"]').trigger('click')
+      await left(w).find('[data-test="rail"]').trigger('click')
+      expect(left(w).attributes('data-state')).toBe('popped')
+      await right(w).find('[data-test="collapse-btn"]').trigger('click')
+      await right(w).find('[data-test="rail"]').trigger('click')
+      expect(right(w).attributes('data-state')).toBe('popped')
+      expect(left(w).attributes('data-state')).toBe('inline')
+    })
+
+    it('US25 互斥反向同样成立（弹左栏收右预览）', async () => {
+      const { w } = await mountReady()
+      await openTab()
+      await right(w).find('[data-test="collapse-btn"]').trigger('click')
+      await right(w).find('[data-test="rail"]').trigger('click')
+      expect(right(w).attributes('data-state')).toBe('popped')
+      await left(w).find('[data-test="collapse-btn"]').trigger('click')
+      await left(w).find('[data-test="rail"]').trigger('click')
+      expect(left(w).attributes('data-state')).toBe('popped')
+      expect(right(w).attributes('data-state')).toBe('inline')
+    })
+
+    it('US26 右侧浮层宽度拖拽结束落独立 key（inline 宽度不被污染）', async () => {
+      window.innerWidth = 1000
+      const { w } = await mountReady()
+      await openTab()
+      await right(w).find('[data-test="collapse-btn"]').trigger('click')
+      await right(w).find('[data-test="rail"]').trigger('click')
+      // 贴右缘浮层：手柄在左缘，左拖变宽（起始 500px = 50vw → 拖到 700px = 70vw）
+      const handle = right(w).find('[data-test="pop-handle"]')
+      handle.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 500 }))
+      window.dispatchEvent(new MouseEvent('pointermove', { clientX: 300 }))
+      window.dispatchEvent(new MouseEvent('pointerup', {}))
+      expect(globalThis.localStorage.getItem(FILE_POPPED_KEY)).toBe('70')
+      expect(globalThis.localStorage.getItem(FILE_KEY)).toBeNull()
+    })
+
+    it('窄屏 (<720px) 三态禁用：无控件，预览面板照常渲染（退回本页响应式布局）', async () => {
+      window.innerWidth = 500
+      const { w } = await mountReady()
+      await openTab()
+      expect(right(w).attributes('data-state')).toBe('disabled')
+      expect(right(w).find('[data-test="collapse-btn"]').exists()).toBe(false)
+      expect(right(w).find('[data-test="drag-handle"]').exists()).toBe(false)
+      expect(w.find('[data-test="file-tabs-panel"]').exists()).toBe(true)
+      expect(left(w).attributes('data-state')).toBe('disabled')
+    })
   })
 })

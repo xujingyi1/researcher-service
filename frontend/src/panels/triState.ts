@@ -3,7 +3,7 @@
 // 决策逻辑全部为纯函数，DOM 度量（指针坐标、视口宽）由宿主注入——贴滚动判定
 // shouldFollowBottom 先例（几何进参数，不摸 window/document），可脱离 DOM 直测。
 
-// 面板呈现态。窄屏 (<720px) 三态整体禁用（宿主经 triStateEnabled 判定后传 disabled）。
+// 面板呈现态。窄屏 (≤720px) 三态整体禁用（宿主经 triStateEnabled 判定后传 disabled）。
 export type PanelState = 'inline' | 'collapsed' | 'popped'
 
 // 驱动状态机的事件：折叠按钮 / 点击窄条 / 窄条展开小按钮 / 浮层收回按钮。
@@ -26,6 +26,33 @@ export function transitionPanelState(state: PanelState, event: PanelEvent): Pane
   return TRANSITIONS[state][event] ?? state
 }
 
+// 组内成员（同一页面共享一个 panel group 的面板，见 usePanelGroup）。
+export interface GroupMember {
+  id: string
+  state: PanelState
+}
+
+// 同页至多一个 popped（spec #667 US25）：成员 id 收到事件后返回**整组**目标态。
+// - 目标成员自身按转移表走（非法转移幂等）；
+// - 目标成员由此进入 popped → 其余仍 popped 的成员经 restore 收回（popped→inline），
+//   与"popped 只经显式收回离开"的状态机语义同源（复用同一转移表，不另立规则）。
+// 非 pop 事件不触发互斥——collapse/expand/restore 与兄弟面板无关。
+export function transitionGroup(
+  members: readonly GroupMember[],
+  id: string,
+  event: PanelEvent,
+): GroupMember[] {
+  const next = members.map((m) =>
+    m.id === id ? { id: m.id, state: transitionPanelState(m.state, event) } : { ...m },
+  )
+  if (!next.some((m) => m.id === id && m.state === 'popped')) return next
+  return next.map((m) =>
+    m.id !== id && m.state === 'popped'
+      ? { id: m.id, state: transitionPanelState(m.state, 'restore') }
+      : m,
+  )
+}
+
 // inline 宽度档（spec #667）：chat 左栏与 wiki 文件树 160–560px；wiki 图谱与 chat 文件预览 240–720px。
 // 后续面板票复用同档常量，不各写字面量。
 export interface WidthRange {
@@ -44,6 +71,9 @@ export function clampRange(width: number, min: number, max: number): number {
 export const POPPED_MIN_VW = 50
 export const POPPED_MAX_VW = 90
 export const POPPED_DEFAULT_VW = 50
+
+// 浮层宽度的持久化档（存储值以 vw 记——控件本身以 vw 计价，跨窗口尺寸保持同一比例语义）。
+export const POPPED_VW_RANGE: WidthRange = { min: POPPED_MIN_VW, max: POPPED_MAX_VW }
 
 export function clampPoppedVw(vw: number): number {
   return clampRange(vw, POPPED_MIN_VW, POPPED_MAX_VW)
@@ -70,9 +100,11 @@ export function draggedWidth(
   return side === 'left' ? startWidth + delta : startWidth - delta
 }
 
-// 窄屏阈值：viewport < 720px 三态整体禁用（无手柄、无窄条、无浮层，保持现有响应式布局）。
-export const TRI_STATE_MIN_VIEWPORT = 720
+// 窄屏阈值：与 ChatView 的 `@media (max-width: 720px)` 同一语义——**≤720px 即窄屏布局**，
+// 故三态启用条件是 viewport > 720（721 起）。二者必须同步，否则恰好 720px 会出现
+// 「窄屏纵向布局里仍渲染拖拽手柄」的错配。
+export const NARROW_VIEWPORT_MAX = 720
 
 export function triStateEnabled(viewportWidth: number): boolean {
-  return viewportWidth >= TRI_STATE_MIN_VIEWPORT
+  return viewportWidth > NARROW_VIEWPORT_MAX
 }

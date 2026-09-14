@@ -1,20 +1,29 @@
 // usePanelTriState —— 面板三态包装 composable（issue #668 / spec #667）。
 // 宿主侧胶水：持有三态 refs，把哑组件冒泡的事件经纯函数（triState 状态机/钳制、
 // panelWidth 持久化）落成状态更新；storage / viewport / token 由 options 注入
-// （jsdom 无布局——DOM 度量一律注入）。四个面板复用同一套，本票只接通 wiki 文件树。
-// 持久化只记 inline 宽度（拖拽结束落盘）；collapsed/popped 态不持久化，每次进页恒 inline。
+// （jsdom 无布局——DOM 度量一律注入）。四个面板复用同一套。
+// 可选 group 注入（spec #667 US25）：同页多面板共享一个 usePanelGroup，弹 B 自动收 A。
+// 持久化（spec #667 US16 + US26）：inline 宽度与 popped 宽度各存独立 key；collapsed/popped
+// 态本身不持久化，每次进页恒 inline。
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { Ref } from 'vue'
 import {
   clampPoppedVw,
   clampRange,
-  pxToVw,
   POPPED_DEFAULT_VW,
+  POPPED_VW_RANGE,
+  pxToVw,
   transitionPanelState,
   triStateEnabled,
 } from '@/panels/triState'
-import type { PanelSide, PanelState, WidthRange } from '@/panels/triState'
-import { loadPanelWidth, panelWidthKey, savePanelWidth } from '@/panels/panelWidth'
+import type { PanelEvent, PanelSide, PanelState, WidthRange } from '@/panels/triState'
+import {
+  loadPanelWidth,
+  panelPoppedWidthKey,
+  panelWidthKey,
+  savePanelWidth,
+} from '@/panels/panelWidth'
+import type { PanelGroup } from '@/panels/usePanelGroup'
 import { tokenOwner } from '@/stores/auth'
 import { safeLocalStorage } from '@/storage'
 
@@ -35,6 +44,8 @@ export interface PanelTriStateOptions {
   storage?: () => Storage | null
   /** 视口宽供给者，默认 window.innerWidth（窄屏判定 + popped px↔vw 换算） */
   getViewportWidth?: () => number
+  /** 同页面板组（同一页面各三态面板传同一个实例）：同页至多一个 popped。不传＝单面板。 */
+  group?: PanelGroup
 }
 
 export function usePanelTriState(options: PanelTriStateOptions) {
@@ -44,11 +55,13 @@ export function usePanelTriState(options: PanelTriStateOptions) {
   const { min, max } = options.inlineRange
 
   // key 在挂载时按当前身份算一次（refresh 换 token 不改 sub，owner 稳定）。
-  const key = panelWidthKey(tokenOwner(options.token()), options.view, options.panel)
+  const owner = tokenOwner(options.token())
+  const key = panelWidthKey(owner, options.view, options.panel)
+  const poppedKey = panelPoppedWidthKey(owner, options.view, options.panel)
 
   const state = ref<PanelState>('inline') // collapsed/popped 不持久化：每次进页恒 inline
   const inlineWidth = ref(loadPanelWidth(storage(), key, options.inlineRange) ?? options.defaultInlineWidth)
-  const poppedVw = ref(POPPED_DEFAULT_VW)
+  const poppedVw = ref(loadPanelWidth(storage(), poppedKey, POPPED_VW_RANGE) ?? POPPED_DEFAULT_VW)
 
   const viewportWidth = ref(getViewportWidth())
   const disabled = computed(() => !triStateEnabled(viewportWidth.value))
@@ -59,17 +72,31 @@ export function usePanelTriState(options: PanelTriStateOptions) {
   onMounted(() => window.addEventListener('resize', syncViewport))
   onUnmounted(() => window.removeEventListener('resize', syncViewport))
 
+  // 组内成员身份（组按页创建，故 view 段冗余但无害——防同页同名面板相撞）。
+  const memberId = `${options.view}/${options.panel}`
+  const unregister = options.group?.register(memberId, () => state.value, (next) => {
+    state.value = next
+  })
+  onUnmounted(() => unregister?.())
+
+  // 三态事件统一出口：有组则经组协调（同页互斥纯函数）+ 组内广播落回各成员；
+  // 无组则本实例自行按转移表迁移。两条路径共用同一转移表，语义不分叉。
+  function dispatch(event: PanelEvent): void {
+    if (options.group) options.group.apply(memberId, event)
+    else state.value = transitionPanelState(state.value, event)
+  }
+
   function onCollapse(): void {
-    state.value = transitionPanelState(state.value, 'collapse')
+    dispatch('collapse')
   }
   function onPop(): void {
-    state.value = transitionPanelState(state.value, 'pop')
+    dispatch('pop')
   }
   function onExpand(): void {
-    state.value = transitionPanelState(state.value, 'expand')
+    dispatch('expand')
   }
   function onRestore(): void {
-    state.value = transitionPanelState(state.value, 'restore')
+    dispatch('restore')
   }
 
   function onResizeInline(widthPx: number): void {
@@ -79,8 +106,10 @@ export function usePanelTriState(options: PanelTriStateOptions) {
     poppedVw.value = clampPoppedVw(pxToVw(widthPx, viewportWidth.value))
   }
   function onDragEnd(): void {
-    // 仅 inline 宽度持久化；popped 拖宽不落盘（spec：弹出/折叠态与弹出宽度均不记）。
+    // 宽度按当前形态落各自 key（spec #667 US16/US26：两种宽度都被记住）；
+    // 形态本身（collapsed/popped）从不落盘——每次进页恒 inline。
     if (state.value === 'inline') savePanelWidth(storage(), key, inlineWidth.value)
+    else if (state.value === 'popped') savePanelWidth(storage(), poppedKey, poppedVw.value)
   }
 
   return {

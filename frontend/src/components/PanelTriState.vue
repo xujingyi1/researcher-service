@@ -81,13 +81,17 @@ const arrows = computed(() => props.side === 'left'
 </script>
 
 <template>
-  <!-- 窄屏：无手柄无按钮，保持现有响应式布局 -->
+  <!-- 窄屏：无手柄无按钮，保持现有响应式布局。仍带 data-side——窄屏同样贴边，
+       贴边边框由 [data-side] 规则给（面板自身不再各自写边框）。
+       宽度走自定义属性而非内联 width：窄屏下宽度属于页面响应式布局（如 chat 页整列铺满），
+       宿主媒体查询需能覆盖它——内联样式会把它钉死。 -->
   <aside
     v-if="disabled"
     data-test="panel"
     data-state="disabled"
     class="panel plain"
-    :style="{ width: `${defaultWidth}px` }"
+    :data-side="side"
+    :style="{ '--panel-default-width': `${defaultWidth}px` }"
   >
     <div class="panel-body" data-test="panel-body"><slot /></div>
   </aside>
@@ -183,10 +187,15 @@ const arrows = computed(() => props.side === 'left'
   height: 100%;
   overflow: hidden;
 }
-.panel.inline,
+.panel.inline {
+  flex: none;
+  overflow: hidden;
+}
+/* 窄屏禁用态：无控件的常驻块，宽度取自宿主注入的默认值（CSS 变量，可被页面媒体查询覆盖）。 */
 .panel.plain {
   flex: none;
   overflow: hidden;
+  width: var(--panel-default-width);
 }
 [data-side='left'] {
   border-right: 1px solid var(--el-border-color);
